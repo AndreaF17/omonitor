@@ -1,0 +1,10 @@
+#!/bin/sh
+set -eu
+
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+mkdir -p "$ROOT/build/tests"
+cd "$ROOT/build/tests"
+
+qmake6 "$ROOT/tests/omonitor_tests.pro"
+make -j"$(nproc)"
+env -u QT_QPA_PLATFORMTHEME QT_QPA_PLATFORM=offscreen ./omonitor_tests

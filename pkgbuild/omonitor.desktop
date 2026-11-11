@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Omonitor
+Name[it]=Omonitor
+Comment=Arrange Hyprland displays visually
+Comment[it]=Disponi visivamente i monitor di Hyprland
+Exec=omonitor
+Icon=omonitor
+Terminal=false
+Categories=Settings;HardwareSettings;
+StartupWMClass=omonitor
