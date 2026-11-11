@@ -6,19 +6,28 @@
 #include <QQmlContext>
 #include <QQuickWindow>
 #include <QQuickStyle>
+#include <QTextStream>
 #include <QTimer>
 #include <QUrl>
 
 #include "backend.h"
 #include "theme.h"
+#include "tui.h"
 #include "translator.h"
 
 int main(int argc, char *argv[])
 {
+    const QString command = argc > 1 ? QString::fromLocal8Bit(argv[1]) : QString("open");
+    const bool terminal = command == "tui";
+    if (command != "open") {
+        qputenv("QT_QPA_PLATFORM", "offscreen");
+        qunsetenv("QT_QPA_PLATFORMTHEME");
+    }
+
     QGuiApplication app(argc, argv);
     app.setApplicationName("omonitor");
     app.setApplicationDisplayName("Omonitor");
-    app.setApplicationVersion("0.1.0");
+    app.setApplicationVersion("0.2.0");
     app.setDesktopFileName("omonitor");
     app.setWindowIcon(QIcon::fromTheme("omonitor"));
 
@@ -26,8 +35,24 @@ int main(int argc, char *argv[])
 
     Translator translator;
     app.installTranslator(&translator);
+    Backend backend(nullptr, {}, {}, !terminal);
+
+    if (terminal)
+        return runTui(backend);
+    if (command == "--help" || command == "help") {
+        QTextStream(stdout) << "Usage: omonitor [open|tui|--version]\n";
+        return 0;
+    }
+    if (command == "--version") {
+        QTextStream(stdout) << app.applicationVersion() << '\n';
+        return 0;
+    }
+    if (command != "open") {
+        QTextStream(stderr) << "Unknown command: " << command << '\n';
+        return 1;
+    }
+
     Theme theme(qEnvironmentVariable("OMONITOR_THEME_DIR"));
-    Backend backend;
 
     QQmlApplicationEngine engine;
     QObject::connect(&translator, &Translator::changed, &engine, &QQmlEngine::retranslate);

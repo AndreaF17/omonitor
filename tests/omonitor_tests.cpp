@@ -48,6 +48,39 @@ private slots:
         QCOMPARE(monitor.value("transform").toInt(), 3);
     }
 
+    void compactsRowsWithoutGaps()
+    {
+        Backend backend(nullptr, {}, {}, false);
+        QVERIFY(backend.loadFromJson(R"([
+          {"name":"eDP-1","width":1920,"height":1200,"refreshRate":60,"x":1948,"y":304,"scale":1,"transform":0,"availableModes":[]},
+          {"name":"DP-1","width":1920,"height":1080,"refreshRate":75,"x":3863,"y":-780,"scale":1,"transform":0,"availableModes":[]},
+          {"name":"DP-2","width":1920,"height":1080,"refreshRate":75,"x":1959,"y":-781,"scale":1,"transform":0,"availableModes":[]}
+        ])"));
+
+        backend.compactLayout();
+        const QVariantList monitors = backend.monitors();
+        QCOMPARE(monitors.at(0).toMap().value("x").toInt(), 0);
+        QCOMPARE(monitors.at(0).toMap().value("y").toInt(), 1080);
+        QCOMPARE(monitors.at(1).toMap().value("x").toInt(), 1920);
+        QCOMPARE(monitors.at(1).toMap().value("y").toInt(), 0);
+        QCOMPARE(monitors.at(2).toMap().value("x").toInt(), 0);
+        QCOMPARE(monitors.at(2).toMap().value("y").toInt(), 0);
+    }
+
+    void snapsDraggedDisplayToAnEdge()
+    {
+        Backend backend(nullptr, {}, {}, false);
+        QVERIFY(backend.loadFromJson(R"([
+          {"name":"DP-1","width":1920,"height":1080,"refreshRate":60,"x":0,"y":0,"scale":1,"transform":0,"availableModes":[]},
+          {"name":"DP-2","width":1920,"height":1080,"refreshRate":60,"x":1920,"y":0,"scale":1,"transform":0,"availableModes":[]}
+        ])"));
+
+        backend.snapPosition(1, 2100, 120);
+        const QVariantMap moved = backend.monitors().at(1).toMap();
+        QCOMPARE(moved.value("x").toInt(), 1920);
+        QCOMPARE(moved.value("y").toInt(), 0);
+    }
+
     void writesAStableManagedBlock()
     {
         QVariantMap monitor{{"name", "DP-1"}, {"mode", "2560x1440@143.97Hz"},

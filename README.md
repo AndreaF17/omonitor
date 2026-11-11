@@ -8,6 +8,8 @@ It follows the active Omarchy accent, language, and window rounding.
 ## Features
 
 - Drag displays into their physical arrangement.
+- Snap dragged displays to the nearest edge and remove gaps automatically.
+- Detect connected displays automatically and identify each physical screen.
 - Pick resolution, refresh rate, scale, and orientation.
 - Preserve manual settings outside Omonitor's managed block in `monitors.lua`.
 - Validate the new Hyprland configuration before accepting it.
@@ -30,12 +32,25 @@ It follows the active Omarchy accent, language, and window rounding.
 The package installs the `omonitor` binary and its launcher entry. Open it with
 `Super + Space`, then search for **Omonitor**.
 
+## Terminal UI
+
+Run the same display arranger inside a terminal:
+
+```sh
+omonitor tui
+```
+
+The TUI can detect, configure, move, compact, apply, confirm, and revert the
+display layout without opening a desktop window.
+
 ## Keyboard shortcuts
 
 | Key | Action |
 | --- | --- |
 | `Space` | Apply the display configuration |
-| `R` | Refresh displays |
+| `A` | Remove gaps |
+| `I` | Identify the physical displays |
+| `R` | Detect displays again |
 | `?` | Show or hide shortcut help |
 | `Q` | Quit |
 

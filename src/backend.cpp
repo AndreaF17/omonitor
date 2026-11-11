@@ -7,10 +7,15 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPoint>
 #include <QProcess>
+#include <QRect>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QStandardPaths>
+#include <algorithm>
+#include <cmath>
+#include <limits>
 
 namespace {
 constexpr auto StartMarker = "-- omonitor:start";
@@ -55,8 +60,16 @@ Backend::Backend(QObject *parent, const QString &configPath, const QString &hypr
         }
     });
 
-    if (autoRefresh)
+    // Connector names change only when a display is added or removed. Polling
+    // that compact signature avoids overwriting layout edits while still making
+    // hotplug detection reliable across docks and GPU drivers.
+    m_detectionTimer.setInterval(1500);
+    connect(&m_detectionTimer, &QTimer::timeout, this, &Backend::detectMonitorChanges);
+
+    if (autoRefresh) {
         QTimer::singleShot(0, this, &Backend::refresh);
+        m_detectionTimer.start();
+    }
 }
 
 QByteArray Backend::runHyprctl(const QStringList &arguments, bool *ok) const
@@ -80,6 +93,36 @@ void Backend::refresh()
     }
     if (!loadFromJson(output))
         setError(tr("Hyprland returned monitor data in an unexpected format."));
+}
+
+QString Backend::monitorSignature(const QByteArray &json)
+{
+    const QJsonDocument document = QJsonDocument::fromJson(json);
+    if (!document.isArray())
+        return {};
+    QStringList names;
+    for (const QJsonValue &value : document.array()) {
+        const QJsonObject object = value.toObject();
+        if (!object.value("disabled").toBool())
+            names << object.value("name").toString();
+    }
+    names.sort();
+    return names.isEmpty() ? QStringLiteral("<none>") : names.join('|');
+}
+
+void Backend::detectMonitorChanges()
+{
+    if (m_pendingConfirmation)
+        return;
+    bool ok = false;
+    const QByteArray output = runHyprctl({"-j", "monitors", "all"}, &ok);
+    if (!ok)
+        return;
+    const QString signature = monitorSignature(output);
+    if (!signature.isEmpty() && signature != m_monitorSignature) {
+        loadFromJson(output);
+        setStatus(tr("Display change detected"));
+    }
 }
 
 bool Backend::loadFromJson(const QByteArray &json)
@@ -121,6 +164,7 @@ bool Backend::loadFromJson(const QByteArray &json)
     }
 
     m_monitors = monitors;
+    m_monitorSignature = monitorSignature(json);
     emit monitorsChanged();
     setError({});
     setStatus(tr("Displays refreshed"));
@@ -148,6 +192,111 @@ void Backend::setPosition(int index, int x, int y)
     monitor["x"] = x;
     monitor["y"] = y;
     updateMonitor(index, monitor);
+}
+
+QSize Backend::logicalSize(const QVariantMap &monitor)
+{
+    const bool rotated = monitor.value("transform").toInt() % 2 == 1;
+    const double scale = std::max(0.5, monitor.value("scale").toDouble());
+    const int width = rotated ? monitor.value("height").toInt() : monitor.value("width").toInt();
+    const int height = rotated ? monitor.value("width").toInt() : monitor.value("height").toInt();
+    return QSize(qRound(width / scale), qRound(height / scale));
+}
+
+void Backend::normalizePositions()
+{
+    if (m_monitors.isEmpty())
+        return;
+    int minimumX = std::numeric_limits<int>::max();
+    int minimumY = std::numeric_limits<int>::max();
+    for (const QVariant &value : m_monitors) {
+        const QVariantMap monitor = value.toMap();
+        minimumX = std::min(minimumX, monitor.value("x").toInt());
+        minimumY = std::min(minimumY, monitor.value("y").toInt());
+    }
+    if (minimumX == 0 && minimumY == 0)
+        return;
+    for (int i = 0; i < m_monitors.size(); ++i) {
+        QVariantMap monitor = m_monitors.at(i).toMap();
+        monitor["x"] = monitor.value("x").toInt() - minimumX;
+        monitor["y"] = monitor.value("y").toInt() - minimumY;
+        m_monitors[i] = monitor;
+    }
+}
+
+void Backend::snapPosition(int index, int x, int y)
+{
+    if (!validIndex(index))
+        return;
+    if (m_monitors.size() == 1) {
+        setPosition(index, 0, 0);
+        return;
+    }
+
+    const QSize movingSize = logicalSize(m_monitors.at(index).toMap());
+    struct Candidate { int x; int y; long long score; bool overlaps; };
+    QList<Candidate> candidates;
+    auto clamped = [](int value, int low, int high) {
+        return std::max(low, std::min(value, high));
+    };
+    auto snapCrossAxis = [&](int value, int movingLength, int otherStart, int otherLength) {
+        constexpr int AlignmentDistance = 240;
+        if (std::abs(value - otherStart) <= AlignmentDistance)
+            return otherStart;
+        const int alignedEnd = otherStart + otherLength - movingLength;
+        if (std::abs(value - alignedEnd) <= AlignmentDistance)
+            return alignedEnd;
+        return clamped(value, otherStart - movingLength + 1, otherStart + otherLength - 1);
+    };
+
+    for (int otherIndex = 0; otherIndex < m_monitors.size(); ++otherIndex) {
+        if (otherIndex == index)
+            continue;
+        const QVariantMap other = m_monitors.at(otherIndex).toMap();
+        const QSize otherSize = logicalSize(other);
+        const int ox = other.value("x").toInt();
+        const int oy = other.value("y").toInt();
+        const QList<QPoint> points{
+            {ox - movingSize.width(), snapCrossAxis(y, movingSize.height(), oy, otherSize.height())},
+            {ox + otherSize.width(), snapCrossAxis(y, movingSize.height(), oy, otherSize.height())},
+            {snapCrossAxis(x, movingSize.width(), ox, otherSize.width()), oy - movingSize.height()},
+            {snapCrossAxis(x, movingSize.width(), ox, otherSize.width()), oy + otherSize.height()}
+        };
+        for (const QPoint &point : points) {
+            const long long dx = point.x() - x;
+            const long long dy = point.y() - y;
+            bool overlaps = false;
+            const QRect placed(point, movingSize);
+            for (int check = 0; check < m_monitors.size(); ++check) {
+                if (check == index)
+                    continue;
+                const QVariantMap existing = m_monitors.at(check).toMap();
+                const QRect occupied(QPoint(existing.value("x").toInt(), existing.value("y").toInt()),
+                                     logicalSize(existing));
+                if (placed.intersects(occupied)) {
+                    overlaps = true;
+                    break;
+                }
+            }
+            candidates << Candidate{point.x(), point.y(), dx * dx + dy * dy, overlaps};
+        }
+    }
+
+    const auto best = std::min_element(candidates.begin(), candidates.end(), [](const Candidate &left,
+                                                                                 const Candidate &right) {
+        if (left.overlaps != right.overlaps)
+            return !left.overlaps;
+        return left.score < right.score;
+    });
+    if (best == candidates.end())
+        return;
+    QVariantMap monitor = m_monitors.at(index).toMap();
+    monitor["x"] = best->x;
+    monitor["y"] = best->y;
+    m_monitors[index] = monitor;
+    normalizePositions();
+    emit monitorsChanged();
+    setStatus(tr("Display snapped to its nearest neighbor"));
 }
 
 void Backend::setMode(int index, const QString &mode)
@@ -190,6 +339,94 @@ void Backend::alignTop(int index, int referenceIndex)
     QVariantMap monitor = m_monitors.at(index).toMap();
     monitor["y"] = m_monitors.at(referenceIndex).toMap().value("y").toInt();
     updateMonitor(index, monitor);
+}
+
+void Backend::placeRelative(int index, int referenceIndex, const QString &direction)
+{
+    if (!validIndex(index) || !validIndex(referenceIndex) || index == referenceIndex)
+        return;
+    QVariantMap monitor = m_monitors.at(index).toMap();
+    const QVariantMap reference = m_monitors.at(referenceIndex).toMap();
+    const QSize size = logicalSize(monitor);
+    const QSize referenceSize = logicalSize(reference);
+    const int rx = reference.value("x").toInt();
+    const int ry = reference.value("y").toInt();
+    if (direction == "left") {
+        monitor["x"] = rx - size.width();
+        monitor["y"] = ry;
+    } else if (direction == "right") {
+        monitor["x"] = rx + referenceSize.width();
+        monitor["y"] = ry;
+    } else if (direction == "above") {
+        monitor["x"] = rx;
+        monitor["y"] = ry - size.height();
+    } else if (direction == "below") {
+        monitor["x"] = rx;
+        monitor["y"] = ry + referenceSize.height();
+    } else {
+        return;
+    }
+    m_monitors[index] = monitor;
+    normalizePositions();
+    emit monitorsChanged();
+}
+
+void Backend::compactLayout()
+{
+    if (m_monitors.isEmpty())
+        return;
+
+    struct Entry { int index; int x; int centerY; int width; int height; };
+    QList<Entry> entries;
+    for (int i = 0; i < m_monitors.size(); ++i) {
+        const QVariantMap monitor = m_monitors.at(i).toMap();
+        const QSize size = logicalSize(monitor);
+        entries << Entry{i, monitor.value("x").toInt(), monitor.value("y").toInt() + size.height() / 2,
+                         size.width(), size.height()};
+    }
+    std::sort(entries.begin(), entries.end(), [](const Entry &left, const Entry &right) {
+        if (left.centerY != right.centerY)
+            return left.centerY < right.centerY;
+        return left.x < right.x;
+    });
+
+    QList<QList<Entry>> rows;
+    for (const Entry &entry : entries) {
+        if (rows.isEmpty()) {
+            rows << QList<Entry>{entry};
+            continue;
+        }
+        const QList<Entry> &last = rows.last();
+        int centerSum = 0;
+        int tallest = 0;
+        for (const Entry &member : last) {
+            centerSum += member.centerY;
+            tallest = std::max(tallest, member.height);
+        }
+        const int rowCenter = centerSum / last.size();
+        if (std::abs(entry.centerY - rowCenter) <= std::max(tallest, entry.height) / 2)
+            rows.last() << entry;
+        else
+            rows << QList<Entry>{entry};
+    }
+
+    int nextY = 0;
+    for (QList<Entry> &row : rows) {
+        std::sort(row.begin(), row.end(), [](const Entry &left, const Entry &right) { return left.x < right.x; });
+        int nextX = 0;
+        int rowHeight = 0;
+        for (const Entry &entry : row) {
+            QVariantMap monitor = m_monitors.at(entry.index).toMap();
+            monitor["x"] = nextX;
+            monitor["y"] = nextY;
+            m_monitors[entry.index] = monitor;
+            nextX += entry.width;
+            rowHeight = std::max(rowHeight, entry.height);
+        }
+        nextY += rowHeight;
+    }
+    emit monitorsChanged();
+    setStatus(tr("Displays arranged without gaps"));
 }
 
 QString Backend::managedBlock(const QVariantList &monitors)

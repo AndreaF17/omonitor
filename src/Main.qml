@@ -20,9 +20,16 @@ ApplicationWindow {
     property int selectedIndex: backend.monitors.length > 0 ? Math.min(layout.selectedIndex, backend.monitors.length - 1) : -1
     property bool helpVisible: false
 
+    function identifyDisplays() {
+        for (var i = 0; i < Qt.application.screens.length; ++i)
+            identifier.createObject(win, { targetScreen: Qt.application.screens[i] })
+    }
+
     Shortcut { sequence: "?"; context: Qt.ApplicationShortcut; onActivated: win.helpVisible = !win.helpVisible }
     Shortcut { sequence: "Q"; context: Qt.ApplicationShortcut; onActivated: Qt.quit() }
     Shortcut { sequence: "R"; context: Qt.ApplicationShortcut; onActivated: backend.refresh() }
+    Shortcut { sequence: "A"; context: Qt.ApplicationShortcut; onActivated: backend.compactLayout() }
+    Shortcut { sequence: "I"; context: Qt.ApplicationShortcut; onActivated: win.identifyDisplays() }
     Shortcut { sequence: "Space"; context: Qt.ApplicationShortcut; onActivated: backend.apply() }
 
     Item {
@@ -49,7 +56,7 @@ ApplicationWindow {
                         font.weight: Font.DemiBold
                     }
                     Label {
-                        text: qsTr("Drag the displays to match your desk")
+                        text: qsTr("Displays are detected automatically · dragged displays snap together")
                         color: "#9b9ba3"
                         font.pixelSize: 14
                     }
@@ -58,7 +65,18 @@ ApplicationWindow {
                 Item { Layout.fillWidth: true }
 
                 Button {
-                    text: qsTr("Refresh")
+                    text: qsTr("Remove gaps")
+                    flat: true
+                    enabled: backend.monitors.length > 1
+                    onClicked: backend.compactLayout()
+                }
+                Button {
+                    text: qsTr("Identify")
+                    flat: true
+                    onClicked: win.identifyDisplays()
+                }
+                Button {
+                    text: qsTr("Detect displays")
                     flat: true
                     onClicked: backend.refresh()
                 }
@@ -96,28 +114,36 @@ ApplicationWindow {
                             return ((m.transform === 1 || m.transform === 3) ? m.width : m.height) / m.scale
                         }
                         function minimumX() {
-                            var value = 0
-                            for (var i = 0; i < backend.monitors.length; ++i)
+                            if (backend.monitors.length === 0)
+                                return 0
+                            var value = backend.monitors[0].x
+                            for (var i = 1; i < backend.monitors.length; ++i)
                                 value = Math.min(value, backend.monitors[i].x)
                             return value
                         }
                         function minimumY() {
-                            var value = 0
-                            for (var i = 0; i < backend.monitors.length; ++i)
+                            if (backend.monitors.length === 0)
+                                return 0
+                            var value = backend.monitors[0].y
+                            for (var i = 1; i < backend.monitors.length; ++i)
                                 value = Math.min(value, backend.monitors[i].y)
                             return value
                         }
                         function maximumX() {
-                            var value = 1
-                            for (var i = 0; i < backend.monitors.length; ++i) {
+                            if (backend.monitors.length === 0)
+                                return 1
+                            var value = backend.monitors[0].x + logicalWidth(backend.monitors[0])
+                            for (var i = 1; i < backend.monitors.length; ++i) {
                                 var m = backend.monitors[i]
                                 value = Math.max(value, m.x + logicalWidth(m))
                             }
                             return value
                         }
                         function maximumY() {
-                            var value = 1
-                            for (var i = 0; i < backend.monitors.length; ++i) {
+                            if (backend.monitors.length === 0)
+                                return 1
+                            var value = backend.monitors[0].y + logicalHeight(backend.monitors[0])
+                            for (var i = 1; i < backend.monitors.length; ++i) {
                                 var m = backend.monitors[i]
                                 value = Math.max(value, m.y + logicalHeight(m))
                             }
@@ -150,11 +176,15 @@ ApplicationWindow {
                                 required property var modelData
                                 property real logicalW: canvas.logicalWidth(modelData)
                                 property real logicalH: canvas.logicalHeight(modelData)
+                                property real dragOffsetX: 0
+                                property real dragOffsetY: 0
+                                property point dragStart: Qt.point(0, 0)
 
                                 x: canvas.originX + modelData.x * canvas.zoom
                                 y: canvas.originY + modelData.y * canvas.zoom
-                                width: Math.max(110, logicalW * canvas.zoom)
-                                height: Math.max(72, logicalH * canvas.zoom)
+                                width: logicalW * canvas.zoom
+                                height: logicalH * canvas.zoom
+                                transform: Translate { x: screen.dragOffsetX; y: screen.dragOffsetY }
                                 color: index === win.selectedIndex ? Qt.lighter(theme.accent, 1.05) : "#29292f"
                                 radius: Math.min(4, theme.radius)
                                 border.width: index === win.selectedIndex ? 2 : 1
@@ -187,13 +217,24 @@ ApplicationWindow {
                                 }
                                 DragHandler {
                                     id: dragger
+                                    target: null
                                     cursorShape: active ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+                                    onTranslationChanged: {
+                                        if (active) {
+                                            screen.dragOffsetX = translation.x - screen.dragStart.x
+                                            screen.dragOffsetY = translation.y - screen.dragStart.y
+                                        }
+                                    }
                                     onActiveChanged: {
-                                        if (!active) {
-                                            var nextX = Math.round((screen.x - canvas.originX) / canvas.zoom)
-                                            var nextY = Math.round((screen.y - canvas.originY) / canvas.zoom)
-                                            backend.setPosition(index, nextX, nextY)
+                                        if (active) {
+                                            screen.dragStart = translation
                                             layout.selectedIndex = index
+                                        } else {
+                                            var nextX = Math.round((screen.x + screen.dragOffsetX - canvas.originX) / canvas.zoom)
+                                            var nextY = Math.round((screen.y + screen.dragOffsetY - canvas.originY) / canvas.zoom)
+                                            screen.dragOffsetX = 0
+                                            screen.dragOffsetY = 0
+                                            backend.snapPosition(index, nextX, nextY)
                                         }
                                     }
                                 }
@@ -237,7 +278,10 @@ ApplicationWindow {
                             model: parent.parent.selectedMonitor.modes || []
                             currentIndex: indexOfValue(parent.parent.selectedMonitor.mode)
                             enabled: win.selectedIndex >= 0
-                            onActivated: backend.setMode(win.selectedIndex, currentValue)
+                            onActivated: {
+                                backend.setMode(win.selectedIndex, currentValue)
+                                backend.compactLayout()
+                            }
                         }
 
                         Label { text: qsTr("Scale"); color: "#b9b9c0" }
@@ -258,7 +302,10 @@ ApplicationWindow {
                                 text: Number(scaleBox.currentValue || 1).toLocaleString(Qt.locale(), 'f', 2) + "×"
                             }
                             enabled: win.selectedIndex >= 0
-                            onActivated: backend.setScale(win.selectedIndex, Number(currentValue))
+                            onActivated: {
+                                backend.setScale(win.selectedIndex, Number(currentValue))
+                                backend.compactLayout()
+                            }
                         }
 
                         Label { text: qsTr("Orientation"); color: "#b9b9c0" }
@@ -275,7 +322,10 @@ ApplicationWindow {
                             valueRole: "value"
                             currentIndex: indexOfValue(parent.parent.selectedMonitor.transform)
                             enabled: win.selectedIndex >= 0
-                            onActivated: backend.setTransform(win.selectedIndex, Number(currentValue))
+                            onActivated: {
+                                backend.setTransform(win.selectedIndex, Number(currentValue))
+                                backend.compactLayout()
+                            }
                         }
 
                         RowLayout {
@@ -382,13 +432,61 @@ ApplicationWindow {
                     spacing: 12
                     Label { text: qsTr("Keyboard shortcuts"); font.pixelSize: 21; font.weight: Font.DemiBold }
                     Label { text: qsTr("Space    Apply configuration") }
-                    Label { text: qsTr("R        Refresh displays") }
+                    Label { text: qsTr("A        Remove all gaps") }
+                    Label { text: qsTr("I        Identify physical displays") }
+                    Label { text: qsTr("R        Detect displays") }
                     Label { text: qsTr("?        Show or hide shortcuts") }
                     Label { text: qsTr("Q        Quit") }
                     Item { Layout.fillHeight: true }
                     Label { text: qsTr("Click anywhere to close"); color: "#8f8f98" }
                 }
             }
+        }
+    }
+
+    Component {
+        id: identifier
+
+        Window {
+            id: identification
+            required property var targetScreen
+            screen: targetScreen
+            color: "#d9000000"
+            flags: Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool
+            title: qsTr("Identify display")
+
+            Rectangle {
+                anchors.centerIn: parent
+                width: 300
+                height: 180
+                color: theme.accent
+                radius: theme.radius
+
+                Column {
+                    anchors.centerIn: parent
+                    spacing: 8
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: identification.targetScreen.name
+                        color: theme.accentForeground
+                        font.pixelSize: 42
+                        font.weight: Font.Bold
+                    }
+                    Label {
+                        anchors.horizontalCenter: parent.horizontalCenter
+                        text: identification.targetScreen.width + " × " + identification.targetScreen.height
+                        color: theme.accentForeground
+                        font.pixelSize: 16
+                    }
+                }
+            }
+
+            Timer {
+                interval: 3500
+                running: true
+                onTriggered: identification.destroy()
+            }
+            Component.onCompleted: showFullScreen()
         }
     }
 }

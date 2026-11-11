@@ -7,12 +7,14 @@ TEMPLATE = app
 HEADERS += \
     src/backend.h \
     src/theme.h \
+    src/tui.h \
     src/translator.h
 
 SOURCES += \
     src/main.cpp \
     src/backend.cpp \
     src/theme.cpp \
+    src/tui.cpp \
     src/translator.cpp
 
 RESOURCES += src/resources.qrc

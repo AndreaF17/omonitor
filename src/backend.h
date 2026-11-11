@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QSize>
 #include <QTimer>
 #include <QVariantList>
 
@@ -25,10 +26,13 @@ public:
 
     Q_INVOKABLE void refresh();
     Q_INVOKABLE void setPosition(int index, int x, int y);
+    Q_INVOKABLE void snapPosition(int index, int x, int y);
     Q_INVOKABLE void setMode(int index, const QString &mode);
     Q_INVOKABLE void setScale(int index, double scale);
     Q_INVOKABLE void setTransform(int index, int transform);
     Q_INVOKABLE void alignTop(int index, int referenceIndex);
+    Q_INVOKABLE void compactLayout();
+    Q_INVOKABLE void placeRelative(int index, int referenceIndex, const QString &direction);
     Q_INVOKABLE void apply();
     Q_INVOKABLE void confirm();
     Q_INVOKABLE void revert();
@@ -52,6 +56,10 @@ private:
     bool validIndex(int index) const;
     void updateMonitor(int index, const QVariantMap &monitor);
     void startConfirmation();
+    void detectMonitorChanges();
+    void normalizePositions();
+    static QSize logicalSize(const QVariantMap &monitor);
+    static QString monitorSignature(const QByteArray &json);
 
     QVariantList m_monitors;
     QString m_error;
@@ -61,6 +69,8 @@ private:
     QString m_previousContents;
     QTimer m_revertTimer;
     QTimer m_countdownTimer;
+    QTimer m_detectionTimer;
+    QString m_monitorSignature;
     bool m_pendingConfirmation = false;
     int m_secondsRemaining = 0;
 };
